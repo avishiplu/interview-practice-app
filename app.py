@@ -34,6 +34,9 @@ from dotenv import load_dotenv
 from openai import OpenAI
 # WHY: Official OpenAI Python client. We create a client and call chat.completions.create(...).
 
+from streamlit.errors import StreamlitSecretNotFoundError
+# WHY: We use this to fail fast if the API key is missing.
+
 
 # =========================
 # 2) Configuration / Secrets
@@ -47,13 +50,13 @@ def get_openai_api_key() -> str | None:
     Return OpenAI API key from Streamlit secrets first (cloud),
     otherwise from environment variables (local .env -> env).
     """
-    # Streamlit Cloud / Secrets
-    if "OPENAI_API_KEY" in st.secrets:
+    try:
         return st.secrets["OPENAI_API_KEY"]
-
-    # Local environment variable
+    except StreamlitSecretNotFoundError:
+        pass
     return os.getenv("OPENAI_API_KEY")
 
+# Get the API key (or fail fast if missing)
 OPENAI_API_KEY = get_openai_api_key()
 
 # Fail fast with a clear error if the key is missing
