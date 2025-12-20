@@ -91,10 +91,97 @@ if "history" not in st.session_state:
     # Stores previous rounds: [{"q":..., "a":..., "feedback":...}, ...]
     st.session_state.history = []
 
+# Store interview language preferences (filled after setup step)
+if "interview_language" not in st.session_state:
+    st.session_state.interview_language = ""
+
+if "language_level" not in st.session_state:
+    st.session_state.language_level = ""
+
+if "explain_language" not in st.session_state:
+    st.session_state.explain_language = ""
+
+# -------------------------
+# Setup wizard state (chat-like but hard-coded)
+# -------------------------
+# setup_step meanings:
+# 0 = Q1 interview language
+# 1 = Q2 target level
+# 2 = Q3 explanation language yes/no
+# 3 = Q4 company website URL (optional)
+# 4 = setup done
+if "setup_step" not in st.session_state:
+    st.session_state.setup_step = 0
+
+# Stores chat-like setup messages so the UI can display them like chat bubbles
+# Example item: {"role": "assistant", "content": "Q1 ..."} or {"role": "user", "content": "German"}
+if "setup_chat" not in st.session_state:
+    st.session_state.setup_chat = []
+
+
 
 # =========================
 # 4) Helper functions (OpenAI calls)
 # =========================
+
+def parse_setup_answer(text: str):
+    """
+    PURPOSE:
+    User যেটা লিখবে (যেকোন ভাষায়), সেখান থেকে 3টা জিনিস বের করে:
+    1) interview_language
+    2) language_level (A1/A2/B1/B2/C1/C2)
+    3) explain_language (যদি user "yes" বলে)
+
+    Example input:
+    "German, B1, yes Bengali"
+    "English B2 no"
+    "বাংলা B1 yes English"
+    """
+    words = text.replace(",", " ").split()
+    words_lower = [w.lower() for w in words]
+
+    # Find CEFR level if present
+    level = ""
+    for lv in ["A1", "A2", "B1", "B2", "C1", "C2"]:
+        if lv.lower() in words_lower:
+            level = lv
+            break
+
+    # Take first word as interview language (simple, minimum logic)
+    interview_language = words[0] if words else ""
+
+    # If user wrote "yes", assume the last word is explanation language
+    explain_language = ""
+    if "yes" in words_lower and len(words) >= 2:
+        explain_language = words[-1]
+
+    return interview_language, level, explain_language
+
+def build_language_context() -> str:
+    """
+    PURPOSE:
+    Model-কে স্পষ্ট করে বলে দেয়া—interview কোন ভাষায় হবে, level কত, আর explanation ভাষা কী।
+
+    WHY:
+    Prompt-এ বলা থাকলেও model এটা নিজে মনে রাখে না।
+    তাই প্রতিবার API call-এ এই context পাঠাতে হয়।
+    """
+    il = st.session_state.interview_language or "not set"
+    lv = st.session_state.language_level or "not set"
+    el = st.session_state.explain_language or "not set"
+
+    return (
+        "SETUP (saved preferences):\n"
+        f"- Interview language: {il}\n"
+        f"- Language level: {lv}\n"
+        f"- Explanation language: {el}\n"
+        "\n"
+        "IMPORTANT RULE:\n"
+        "- Ask interview questions ONLY in the interview language.\n"
+        "- Keep vocabulary/sentences at the language level.\n"
+        "- If explanation language is set, explanations should be in that language.\n"
+    )
+
 
 def generate_first_question(job_description: str) -> str:
     """
@@ -105,16 +192,60 @@ def generate_first_question(job_description: str) -> str:
         messages=[
             {
                 "role": "system",
-                "content": (
-                    "You are an interview coach. Ask ONE short interview question "
-                    "based on the job description."
-                ),
+                "content": """
+                You are an interview coach for job interviews in ANY language.
+
+                Your goal: help the candidate succeed in a real interview.
+
+                STEP 0 — Setup questions (ask these first, before any interview questions):
+                1) Ask which language the interview will be conducted in.
+                2) Ask the Users language level (A2/B1/B2/C1).
+                3) Ask whether the user wants explanations in a second language (mother tongue).
+
+                STEP 1 — Job & company context:
+                4) Ask for the company website URL and the job description text.
+                5) Analyze the job description into clear categories.
+                6) Propose number of questions per category.
+                7) Ask which category to start with.
+
+                Interview coaching behavior:
+                - Be realistic and job-specific.
+                - Keep tone warm and confidence-building.
+                - Increase difficulty gradually.
+                - Prefer concrete examples.
+                - Never shame the user.
+
+                Answer correction rule:
+                - Rewrite answer correctly.
+                - Provide stronger interview-ready version.
+                - Give max 3 coaching tips.
+
+                Translation rule:
+                - Translate only when requested.
+                - Keep translations short.
+
+                Output format:
+                - Always start with "Q:" (question) and end with "A:" (answer).
+                - Always include the question number (e.g., "Q1:") and category (e.g., "Job context:").
+                - Always end with a coaching tip (max 3).
+                - Always include the translation to mother tongue if requested.
+
+
+                Ask ONE short interview question 
+                    based on the job description.
+                """ 
             },
-            {"role": "user", "content": job_description},
+            {
+                "role": "user",
+                "content": f"""{build_language_context()}
+            JOB DESCRIPTION:
+            {job_description}
+            """
+            },
         ],
         temperature=0.7,
     )
-    return resp.choices[0].message.content.strip()
+    return resp.choices[0].message.content.strip()  # type: ignore
 
 
 def generate_feedback(job_description: str, question: str, answer: str) -> str:
@@ -134,6 +265,7 @@ def generate_feedback(job_description: str, question: str, answer: str) -> str:
             {
                 "role": "user",
                 "content": (
+                    build_language_context() + "\n\n"
                     f"Job description:\n{job_description}\n\n"
                     f"Question:\n{question}\n\n"
                     f"Answer:\n{answer}"
@@ -165,6 +297,7 @@ def generate_next_question(job_description: str, asked_questions: list[str]) -> 
             {
                 "role": "user",
                 "content": (
+                    build_language_context() + "\n\n"
                     f"Job description:\n{job_description}\n\n"
                     f"Asked so far:\n{asked_block}"
                 ),
@@ -182,28 +315,95 @@ def generate_next_question(job_description: str, asked_questions: list[str]) -> 
 st.title("Interview Practice App")
 st.write("Paste a job description and start practicing!")
 
-# Keep the text area filled with the saved job description from session state
-job_description = st.text_area(
-    "Paste the job description here",
-    value=st.session_state.job,
-    placeholder="Paste the full job description here...",
-)
+# =========================
+# Setup (chat-like, hard-coded)
+# =========================
 
-# -------------------------
-# Start Interview Button
-# -------------------------
-# This block runs only when the button is clicked.
-# On click, Streamlit reruns the script, but the button is "True" only on that click.
-if st.button("Start Interview"):
-    if len(job_description.strip()) == 0:
-        st.error("Please paste a job description to start the interview.")
+st.subheader("Setup (chat-like)")
+
+# Show setup chat history
+for msg in st.session_state.setup_chat:
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
+
+# Decide which setup question to ask
+if st.session_state.setup_step == 0:
+    current_q = "Q1) Which language will the interview be conducted in? (e.g., German/English/Bengali)"
+elif st.session_state.setup_step == 1:
+    current_q = "Q2) Target language level? (A2/B1/B2/C1) or exam score?"
+elif st.session_state.setup_step == 2:
+    current_q = "Q3) Do you want explanations in your mother tongue? If yes, type the language. If no, type: no"
+elif st.session_state.setup_step == 3:
+    current_q = "Q4) Company website URL? (optional) If you want to skip, type: skip"
+else:
+    current_q = ""
+
+# If setup not done, show the next question once
+if st.session_state.setup_step < 4:
+    # Only add the assistant question if it is not already the last message
+    if (not st.session_state.setup_chat) or (st.session_state.setup_chat[-1]["role"] != "assistant"):
+        st.session_state.setup_chat.append({"role": "assistant", "content": current_q})
+        with st.chat_message("assistant"):
+            st.write(current_q)
+
+    # Chat-like input box (user types setup answer here)
+    user_setup_input = st.chat_input("Type your setup answer here...")
+
+    if user_setup_input:
+        # Save user message to setup chat history
+        st.session_state.setup_chat.append(
+            {"role": "user", "content": user_setup_input}
+        )
+
+        # Save setup answers step-by-step
+        if st.session_state.setup_step == 0:
+            st.session_state.interview_language = user_setup_input.strip()
+
+        elif st.session_state.setup_step == 1:
+            st.session_state.language_level = user_setup_input.strip()
+
+        elif st.session_state.setup_step == 2:
+            if user_setup_input.strip().lower() != "no":
+                st.session_state.explain_language = user_setup_input.strip()
+            else:
+                st.session_state.explain_language = ""
+
+        elif st.session_state.setup_step == 3:
+            if user_setup_input.strip().lower() != "skip":
+                st.session_state.company_website = user_setup_input.strip()
+
+        # Move to next setup step (Q1 → Q2 → Q3 → Q4)
+        st.session_state.setup_step += 1
+
+        # Rerun so the next question appears immediately
+        st.rerun()
+
     else:
-        # Save job description and mark interview as started
-        st.session_state.started = True
-        st.session_state.job = job_description
+        st.success("Setup complete ✅")
 
-        # Generate the first question and store it
-        st.session_state.question = generate_first_question(job_description)
+else:
+    st.success("Setup complete ✅")
+
+
+# Show job description input ONLY after setup is complete
+if st.session_state.setup_step >= 4:
+    # Keep the text area filled with the saved job description from session state
+    job_description = st.text_area(
+        "Paste the job description here",
+        value=st.session_state.job,
+        placeholder="Paste the full job description here...",
+    )
+
+    # Start Interview Button
+    if st.button("Start Interview"):
+        if len(job_description.strip()) == 0:
+            st.error("Please paste a job description to start the interview.")
+        else:
+            st.session_state.started = True
+            st.session_state.job = job_description
+            st.session_state.question = generate_first_question(job_description)
+
+
 
 
 # =========================
@@ -235,6 +435,17 @@ if st.session_state.started:
             st.error("Please write an answer before submitting.")
         else:
             # 1) Generate feedback for the answer
+            # Save setup preferences only once (first time user answers)
+            if not st.session_state.interview_language:
+                il, lv, el = parse_setup_answer(user_answer)
+
+                if il:
+                    st.session_state.interview_language = il
+                if lv:
+                    st.session_state.language_level = lv
+                if el:
+                    st.session_state.explain_language = el
+
             feedback = generate_feedback(
                 job_description=st.session_state.job,
                 question=st.session_state.question,
