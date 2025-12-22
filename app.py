@@ -127,16 +127,18 @@ if "setup_chat" not in st.session_state:
 def parse_setup_answer(text: str):
     """
     PURPOSE:
-    User যেটা লিখবে (যেকোন ভাষায়), সেখান থেকে 3টা জিনিস বের করে:
+    From what the user writes (in any language), extract 3 things:
+
     1) interview_language
     2) language_level (A1/A2/B1/B2/C1/C2)
-    3) explain_language (যদি user "yes" বলে)
+    3) explain_language (if the user says "yes")
 
     Example input:
     "German, B1, yes Bengali"
     "English B2 no"
-    "বাংলা B1 yes English"
+    "Bangla B1 yes English"
     """
+
     words = text.replace(",", " ").split()
     words_lower = [w.lower() for w in words]
 
@@ -160,11 +162,11 @@ def parse_setup_answer(text: str):
 def build_language_context() -> str:
     """
     PURPOSE:
-    Model-কে স্পষ্ট করে বলে দেয়া—interview কোন ভাষায় হবে, level কত, আর explanation ভাষা কী।
+    Clearly tell the model: which language the interview will be in, what the level is, and what the explanation language is.
 
     WHY:
-    Prompt-এ বলা থাকলেও model এটা নিজে মনে রাখে না।
-    তাই প্রতিবার API call-এ এই context পাঠাতে হয়।
+    Even if it is mentioned in the prompt, the model does not remember it by itself.
+    So, this context must be sent with every API call.
     """
     il = st.session_state.interview_language or "not set"
     lv = st.session_state.language_level or "not set"
